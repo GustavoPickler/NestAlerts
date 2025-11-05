@@ -287,6 +287,49 @@ def _speak_fallback(text: str):
     except Exception as e:
         logger.error(f"Erro no fallback speak(): {e}")
 
+# ---- Helpers de frase ------------------------------------------------------
+def _humanize_timedelta(seconds: float) -> str:
+    """Converte um delta em segundos numa frase em pt-BR (minutos/horas)."""
+    secs = max(0, int(round(seconds)))
+    mins = secs // 60
+    if mins < 1:
+        return "menos de um minuto"
+    if mins == 1:
+        return "1 minuto"
+    if mins < 60:
+        return f"{mins} minutos"
+
+    horas = mins // 60
+    resto = mins % 60
+    if resto == 0:
+        return f"{horas} {'hora' if horas == 1 else 'horas'}"
+    if horas == 1:
+        return f"1 hora e {resto} {'minuto' if resto == 1 else 'minutos'}"
+    return f"{horas} horas e {resto} {'minuto' if resto == 1 else 'minutos'}"
+
+
+def _build_alert_message(summary: str, start_dt: datetime) -> str:
+    """
+    Monta a frase final usando a ALERT_PHRASE do .env.
+    Placeholders disponíveis: {summary} {hora} {lead} {agora}
+    """
+    agora_dt = tz_now()
+    delta_secs = (start_dt - agora_dt).total_seconds()
+    lead_str = _humanize_timedelta(delta_secs)
+
+    frase_base = os.getenv(
+        "ALERT_PHRASE",
+        'Gustavo, você tem uma reunião "{summary}" às {hora}, em {lead}.'
+    )
+
+    return frase_base.format(
+        summary=summary,
+        hora=start_dt.strftime("%H:%M"),
+        lead=lead_str,
+        agora=agora_dt.strftime("%H:%M"),
+    )
+
+
 # ---- Execução principal ---------------------------------------------------
 def run_once():
     start_flask_server()
@@ -296,10 +339,16 @@ def run_once():
         logger.info(f"Config: LEAD={LEAD_MINUTES}min TZ={TZ_NAME} RANGE={hours_ahead}h DEBUG={DEBUG_MODE}")
 
         service = get_calendar_service()
+        # 🧹 Gerencia cache diário de alertas
         seen = load_seen()
-        if RESET_CACHE_ON_START and DEBUG_MODE:
+        today_str = tz_now().date().isoformat()
+        if not seen or all(v.get("date") != today_str for v in seen.values()):
+            # se não há cache de hoje → limpa e recria
+            if os.path.exists(CACHE_FILE):
+                os.remove(CACHE_FILE)
+                logger.info("🧹 Cache antigo removido (novo dia detectado).")
             seen = {}
-            logger.info("[DEBUG] Cache resetado – todos os alertas serão repetidos.")
+
 
         # Busca eventos futuros
         events = service.events().list(
@@ -310,6 +359,9 @@ def run_once():
             orderBy="startTime"
         ).execute().get("items", [])
         logger.info(f"Eventos obtidos: {len(events)}")
+
+        eventos_futuros = []
+        evento_alertado = False
 
         for e in events:
             if e.get("status") == "cancelled":
@@ -323,55 +375,35 @@ def run_once():
             summary = e.get("summary", "(sem título)")
             delta_min = (start - tz_now()).total_seconds() / 60
 
-           # 🧪 DEBUG: usa a mesma frase do modo normal, mas ignora a janela de tempo
+            # Guarda para log posterior
+            eventos_futuros.append((summary, start.strftime("%H:%M"), round(delta_min)))
+
+            # 🧪 DEBUG → fala o primeiro evento futuro com a mesma frase do modo normal
             if DEBUG_MODE:
-                delta_min_rounded = int(round((start - tz_now()).total_seconds() / 60))
-                if delta_min_rounded < 1:
-                    lead_str = "menos de um minuto"
-                elif delta_min_rounded == 1:
-                    lead_str = "1 minuto"
-                else:
-                    lead_str = f"{delta_min_rounded} minutos"
-
-                hora = start.strftime('%H:%M')
-                agora = tz_now().strftime('%H:%M')
-
-                frase_base = os.getenv(
-                    "ALERT_PHRASE",
-                    "Agora são {agora}. Gustavo, sua próxima reunião '{summary}' começa às {hora}, em {lead}."
-                )
-                msg = frase_base.format(summary=summary, hora=hora, lead=lead_str, agora=agora)
-
-                logger.info(f"[DEBUG] {msg} (delta={delta_min_rounded} min)")
+                msg = _build_alert_message(summary, start)
+                logger.info(f"[DEBUG] {msg}")
                 speak(msg)
+                evento_alertado = True
                 break
 
-            # 🔔 Normal: alerta se estiver dentro da janela configurada
+            # 🔔 Normal → alerta se dentro da janela (<= LEAD_MINUTES)
             if 0 <= delta_min <= LEAD_MINUTES:
                 if not REPEAT_ALERTS and summary in seen:
                     continue
-
-                # Converte minutos para frase natural
-                delta_min_rounded = int(round(delta_min))
-                if delta_min < 1:
-                    lead_str = "menos de um minuto"
-                elif delta_min_rounded == 1:
-                    lead_str = "1 minuto"
-                else:
-                    lead_str = f"{delta_min_rounded} minutos"
-
-                hora = start.strftime('%H:%M')
-                agora = tz_now().strftime('%H:%M')
-                frase_base = os.getenv(
-                    "ALERT_PHRASE",
-                    "Agora são {agora}. Gustavo, sua próxima reunião '{summary}' começa às {hora}, em {lead}."
-                )
-                msg = frase_base.format(summary=summary, hora=hora, lead=lead_str, agora=agora)
-
-                logger.info(f"[Aviso emitido] {msg} (delta={delta_min:.1f} min)")
+                msg = _build_alert_message(summary, start)
                 speak(msg)
                 mark_alerted(seen, summary)
+                logger.info(f"[Aviso emitido] {msg}")
+                evento_alertado = True
                 break
+
+        # 🪶 Pós-laço → logs explicativos
+        if not events:
+            logger.info("Nenhum evento encontrado no intervalo configurado.")
+        elif not evento_alertado:
+            logger.info("Há eventos futuros, mas nenhum dentro da janela de aviso (≤ %d min).", LEAD_MINUTES)
+            for nome, hora, delta in eventos_futuros[:3]:  # mostra até 3 próximos
+                logger.info(f"→ '{nome}' às {hora} (em {delta} min)")
 
     except Exception as e:
         logger.error(f"Erro geral: {e}")

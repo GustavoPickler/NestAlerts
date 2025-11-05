@@ -4,7 +4,7 @@ py -m venv .venv
 call .venv\Scripts\activate
 
 echo [INFO] Instalando dependências...
-call .venv\Scripts\python.exe -m pip install --upgrade pip
+pip install --upgrade pip
 pip install -r requirements.txt
 
 echo [INFO] Ambiente pronto!
