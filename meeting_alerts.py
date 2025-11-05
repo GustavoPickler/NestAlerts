@@ -292,9 +292,8 @@ def run_once():
     start_flask_server()
     log_start_end("MeetingAlerts Run", start=True)
     try:
-        # Intervalo de busca: 12h se DEBUG, 2h se normal
         hours_ahead = 12 if DEBUG_MODE else 2
-        logger.info(f"Config: LEAD={LEAD_MINUTES}min WINDOW={WINDOW_MINUTES}min TZ={TZ_NAME} RANGE={hours_ahead}h DEBUG={DEBUG_MODE}")
+        logger.info(f"Config: LEAD={LEAD_MINUTES}min TZ={TZ_NAME} RANGE={hours_ahead}h DEBUG={DEBUG_MODE}")
 
         service = get_calendar_service()
         seen = load_seen()
@@ -302,7 +301,7 @@ def run_once():
             seen = {}
             logger.info("[DEBUG] Cache resetado – todos os alertas serão repetidos.")
 
-        # Busca eventos futuros no intervalo definido
+        # Busca eventos futuros
         events = service.events().list(
             calendarId=CALENDAR_ID,
             timeMin=tz_now().isoformat(),
@@ -324,21 +323,54 @@ def run_once():
             summary = e.get("summary", "(sem título)")
             delta_min = (start - tz_now()).total_seconds() / 60
 
-            # 🔧 Em modo DEBUG, sempre fala o primeiro evento (para testar o fluxo)
+           # 🧪 DEBUG: usa a mesma frase do modo normal, mas ignora a janela de tempo
             if DEBUG_MODE:
-                msg = f"[DEBUG] Próxima reunião é '{summary}', às {start.strftime('%H:%M')}."
+                delta_min_rounded = int(round((start - tz_now()).total_seconds() / 60))
+                if delta_min_rounded < 1:
+                    lead_str = "menos de um minuto"
+                elif delta_min_rounded == 1:
+                    lead_str = "1 minuto"
+                else:
+                    lead_str = f"{delta_min_rounded} minutos"
+
+                hora = start.strftime('%H:%M')
+                agora = tz_now().strftime('%H:%M')
+
+                frase_base = os.getenv(
+                    "ALERT_PHRASE",
+                    "Agora são {agora}. Gustavo, sua próxima reunião '{summary}' começa às {hora}, em {lead}."
+                )
+                msg = frase_base.format(summary=summary, hora=hora, lead=lead_str, agora=agora)
+
+                logger.info(f"[DEBUG] {msg} (delta={delta_min_rounded} min)")
                 speak(msg)
-                logger.info(f"[Aviso DEBUG emitido] {msg}")
                 break
 
-            # 🔔 Em modo normal, só alerta se estiver a <= LEAD_MINUTES
+            # 🔔 Normal: alerta se estiver dentro da janela configurada
             if 0 <= delta_min <= LEAD_MINUTES:
                 if not REPEAT_ALERTS and summary in seen:
                     continue
-                msg = f"Gustavo, sua próxima reunião é '{summary}', começa às {start.strftime('%H:%M')}."
+
+                # Converte minutos para frase natural
+                delta_min_rounded = int(round(delta_min))
+                if delta_min < 1:
+                    lead_str = "menos de um minuto"
+                elif delta_min_rounded == 1:
+                    lead_str = "1 minuto"
+                else:
+                    lead_str = f"{delta_min_rounded} minutos"
+
+                hora = start.strftime('%H:%M')
+                agora = tz_now().strftime('%H:%M')
+                frase_base = os.getenv(
+                    "ALERT_PHRASE",
+                    "Agora são {agora}. Gustavo, sua próxima reunião '{summary}' começa às {hora}, em {lead}."
+                )
+                msg = frase_base.format(summary=summary, hora=hora, lead=lead_str, agora=agora)
+
+                logger.info(f"[Aviso emitido] {msg} (delta={delta_min:.1f} min)")
                 speak(msg)
                 mark_alerted(seen, summary)
-                logger.info(f"[Aviso emitido] {msg}")
                 break
 
     except Exception as e:
