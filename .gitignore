@@ -1,0 +1,63 @@
+# =========================
+# NestAlerts — .gitignore
+# =========================
+
+# 🧩 Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.pickle
+*.pid
+*.gz
+*.bak
+*.swp
+*.tmp
+*.cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 🧱 Ambiente virtual
+.venv/
+env/
+venv/
+ENV/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+
+# 🌎 Configurações locais e segredos
+.env
+credentials.json
+google_tts_key.json
+token.json
+token.pickle
+alerts_seen.json
+debug_config.py
+
+# 📁 Diretórios de runtime
+logs/
+tts/
+__precache__/
+
+# ⚙️ IDEs / Editores
+.vscode/
+.idea/
+*.code-workspace
+
+# 🪟 Sistema Operacional
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 🧪 Build e distribuição
+build/
+dist/
+*.spec
+
+# 🧰 Outros opcionais
+background.jpg
+meeting_alerts.log
