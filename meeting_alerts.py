@@ -292,29 +292,55 @@ def run_once():
     start_flask_server()
     log_start_end("MeetingAlerts Run", start=True)
     try:
-        logger.info(f"Config: LEAD={LEAD_MINUTES}min WINDOW={WINDOW_MINUTES}min TZ={TZ_NAME}")
+        # Intervalo de busca: 12h se DEBUG, 2h se normal
+        hours_ahead = 12 if DEBUG_MODE else 2
+        logger.info(f"Config: LEAD={LEAD_MINUTES}min WINDOW={WINDOW_MINUTES}min TZ={TZ_NAME} RANGE={hours_ahead}h DEBUG={DEBUG_MODE}")
+
         service = get_calendar_service()
         seen = load_seen()
         if RESET_CACHE_ON_START and DEBUG_MODE:
             seen = {}
             logger.info("[DEBUG] Cache resetado – todos os alertas serão repetidos.")
-        events = service.events().list(calendarId=CALENDAR_ID, timeMin=tz_now().isoformat(),
-                                       timeMax=(tz_now()+timedelta(hours=2)).isoformat(),
-                                       singleEvents=True, orderBy="startTime").execute().get("items", [])
+
+        # Busca eventos futuros no intervalo definido
+        events = service.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=tz_now().isoformat(),
+            timeMax=(tz_now() + timedelta(hours=hours_ahead)).isoformat(),
+            singleEvents=True,
+            orderBy="startTime"
+        ).execute().get("items", [])
         logger.info(f"Eventos obtidos: {len(events)}")
 
         for e in events:
             if e.get("status") == "cancelled":
                 continue
+
             start_str = e["start"].get("dateTime")
             if not start_str:
                 continue
+
             start = datetime.fromisoformat(start_str).astimezone(tz.gettz(TZ_NAME))
             summary = e.get("summary", "(sem título)")
-            msg = f"Gustavo, sua próxima reunião é '{summary}', começa às {start.strftime('%H:%M')}."
-            speak(msg)
-            logger.info(f"[Aviso emitido] {msg}")
-            break
+            delta_min = (start - tz_now()).total_seconds() / 60
+
+            # 🔧 Em modo DEBUG, sempre fala o primeiro evento (para testar o fluxo)
+            if DEBUG_MODE:
+                msg = f"[DEBUG] Próxima reunião é '{summary}', às {start.strftime('%H:%M')}."
+                speak(msg)
+                logger.info(f"[Aviso DEBUG emitido] {msg}")
+                break
+
+            # 🔔 Em modo normal, só alerta se estiver a <= LEAD_MINUTES
+            if 0 <= delta_min <= LEAD_MINUTES:
+                if not REPEAT_ALERTS and summary in seen:
+                    continue
+                msg = f"Gustavo, sua próxima reunião é '{summary}', começa às {start.strftime('%H:%M')}."
+                speak(msg)
+                mark_alerted(seen, summary)
+                logger.info(f"[Aviso emitido] {msg}")
+                break
+
     except Exception as e:
         logger.error(f"Erro geral: {e}")
         logger.debug(traceback.format_exc())
