@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
+
 """
 Meeting Alerts — Google Calendar + Google Cloud TTS
 ---------------------------------------------------
+
 • Alerta de reuniões 5 minutos antes (com tolerância de ±1min).
 • Fala natural via Google Cloud TTS (com fallback via Google Translate TTS).
 • Servidor Flask interno para servir os MP3 gerados.
@@ -17,6 +19,9 @@ import socket
 import logging
 import traceback
 import threading
+import pygame
+from google.cloud import texttospeech
+from io import BytesIO
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -26,6 +31,7 @@ from flask import Flask, send_from_directory, abort
 # =============================================================================
 # Estrutura de pastas e arquivos
 # =============================================================================
+
 ROOT_DIR = Path(__file__).resolve().parent
 DATA_DIR = ROOT_DIR / "data"
 LOG_DIR = ROOT_DIR / "logs"
@@ -42,12 +48,15 @@ for p in (DATA_DIR, LOG_DIR, TTS_DIR):
 # =============================================================================
 # Auto-ativar venv local (se não ativo)
 # =============================================================================
+
 if not os.environ.get("VIRTUAL_ENV"):
     venv_dir = ROOT_DIR / ".venv"
     activate_this = venv_dir / ("Scripts/activate_this.py" if os.name == "nt" else "bin/activate_this.py")
     if activate_this.exists():
-        exec(compile(activate_this.read_text(encoding="utf-8"), str(activate_this), "exec"),
-             dict(__file__=str(activate_this)))
+        exec(
+            compile(activate_this.read_text(encoding="utf-8"), str(activate_this), "exec"),
+            dict(__file__=str(activate_this))
+        )
         print("[INFO] Virtualenv ativado automaticamente.")
     else:
         print("[INFO] Virtualenv não encontrada. Execute 'setup_venv.bat' ou 'setup_venv.sh' primeiro.")
@@ -56,6 +65,7 @@ if not os.environ.get("VIRTUAL_ENV"):
 # =============================================================================
 # Flags de debug (opcionais)
 # =============================================================================
+
 try:
     from debug_config import (
         DEBUG_MODE,
@@ -72,6 +82,7 @@ except Exception:
 # =============================================================================
 # .env (opcional)
 # =============================================================================
+
 try:
     from dotenv import load_dotenv
     load_dotenv(ROOT_DIR / ".env")
@@ -81,12 +92,15 @@ except Exception:
 # =============================================================================
 # Config
 # =============================================================================
+
 TZ_NAME = os.getenv("TZ", "America/Sao_Paulo")
 CALENDAR_ID = os.getenv("CALENDAR_ID", "primary")
 LEAD_MINUTES = int(os.getenv("LEAD_MINUTES", 5))
-EXCLUDE_KEYWORDS = [k.strip().lower() for k in os.getenv(
-    "EXCLUDE_KEYWORDS", "almoço,almoco,lunch"
-).split(",") if k.strip()]
+EXCLUDE_KEYWORDS = [
+    k.strip().lower()
+    for k in os.getenv("EXCLUDE_KEYWORDS", "almoço,almoco,lunch").split(",")
+    if k.strip()
+]
 
 LOCAL_IP = os.getenv("LOCAL_IP", "127.0.0.1")
 LOCAL_PORT = int(os.getenv("LOCAL_PORT", "8001"))
@@ -101,6 +115,7 @@ ALERT_PHRASE = os.getenv(
 # =============================================================================
 # Logging
 # =============================================================================
+
 LOG_FILE = LOG_DIR / f"alerts_{datetime.now().strftime('%Y-%m-%d')}.log"
 logger = logging.getLogger("NestAlerts")
 logger.setLevel(logging.DEBUG)
@@ -111,17 +126,21 @@ fh.setFormatter(fmt)
 fh.setLevel(logging.DEBUG)
 logger.addHandler(fh)
 
+
 class ColorFormatter(logging.Formatter):
     COLORS = {"INFO": "\033[94m", "WARNING": "\033[93m", "ERROR": "\033[91m", "DEBUG": "\033[90m"}
     RESET = "\033[0m"
+
     def format(self, record):
         color = self.COLORS.get(record.levelname, "")
         return f"{color}{super().format(record)}{self.RESET}"
+
 
 ch = logging.StreamHandler(sys.stdout)
 ch.setLevel(logging.INFO if (SHOW_LOGS_IN_CONSOLE or DEBUG_MODE) else logging.ERROR)
 ch.setFormatter(ColorFormatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
 logger.addHandler(ch)
+
 
 def log_start_end(tag: str, start: bool = True) -> None:
     bar = "─" * 60
@@ -130,7 +149,9 @@ def log_start_end(tag: str, start: bool = True) -> None:
 # =============================================================================
 # Flask (serve MP3)
 # =============================================================================
+
 app = Flask(__name__)
+
 
 @app.get("/tts/_ls")
 def tts_list():
@@ -140,6 +161,7 @@ def tts_list():
         "Content-Type": "text/plain; charset=utf-8",
         "Cache-Control": "no-store",
     }
+
 
 @app.get("/tts/<path:filename>")
 def serve_tts(filename: str):
@@ -151,13 +173,16 @@ def serve_tts(filename: str):
         logger.warning(f"[HTTP] 404 /tts → {(TTS_DIR / filename).resolve()} ({e})")
         abort(404)
 
+
 @app.get("/healthz")
 def healthz():
     return "ok", 200
 
+
 def start_flask_server():
     def run():
         app.run(host="0.0.0.0", port=LOCAL_PORT, debug=False, use_reloader=False)
+
     threading.Thread(target=run, daemon=True).start()
 
     # espera subir
@@ -176,7 +201,9 @@ def start_flask_server():
 # =============================================================================
 # Google Calendar
 # =============================================================================
+
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+
 
 def get_calendar_service():
     from google.auth.transport.requests import Request
@@ -201,8 +228,10 @@ def get_calendar_service():
 # =============================================================================
 # Utilitários
 # =============================================================================
+
 def tz_now() -> datetime:
     return datetime.now(tz.gettz(TZ_NAME))
+
 
 def load_seen() -> dict:
     if not CACHE_FILE.exists():
@@ -214,12 +243,15 @@ def load_seen() -> dict:
     except Exception:
         return {}
 
+
 def save_seen(seen: dict) -> None:
     CACHE_FILE.write_text(json.dumps(seen, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 def mark_alerted(seen: dict, key: str) -> None:
     seen[key] = {"date": tz_now().date().isoformat(), "time": tz_now().strftime("%H:%M:%S")}
     save_seen(seen)
+
 
 def _tcp_open(ip: str, port: int, timeout: float = 3) -> bool:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -232,7 +264,9 @@ def _tcp_open(ip: str, port: int, timeout: float = 3) -> bool:
 # =============================================================================
 # TTS (Google Cloud) + Fallback
 # =============================================================================
+
 def speak(text: str) -> None:
+    """Síntese com Google Cloud TTS e reprodução no Nest Hub ou via Bluetooth."""
     try:
         from google.cloud import texttospeech
         import pychromecast, requests
@@ -241,6 +275,7 @@ def speak(text: str) -> None:
         os.environ.setdefault("NO_PROXY", f"127.0.0.1,localhost,{LOCAL_IP}")
         os.environ.setdefault("no_proxy", f"127.0.0.1,localhost,{LOCAL_IP}")
 
+        # 🎤 Gera o áudio
         client = texttospeech.TextToSpeechClient()
         synthesis_input = texttospeech.SynthesisInput(text=text)
         voice = texttospeech.VoiceSelectionParams(language_code="pt-BR", name="pt-BR-Standard-B")
@@ -250,59 +285,186 @@ def speak(text: str) -> None:
         filename = f"speech_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
         filepath = TTS_DIR / filename
         filepath.write_bytes(response.audio_content)
-
         logger.info(f"[TTS] Gravado: {filepath} ({filepath.stat().st_size} bytes)")
-
         url_public = f"http://{LOCAL_IP}:{LOCAL_PORT}/tts/{filename}"
-        url_self   = f"http://127.0.0.1:{LOCAL_PORT}/tts/{filename}"
 
-        try:
-            import requests
-            r = requests.get(url_self, timeout=3, proxies={"http": None, "https": None})
-            logger.info(f"[HTTP] Self-check ({r.status_code}): {url_self}")
-        except Exception as e:
-            logger.warning(f"[HTTP] Self-check falhou: {e}")
-
+        # 🔌 Verifica conexão com o Nest
         if not _tcp_open(NEST_IP, NEST_PORT):
-            logger.warning("Nest Hub inacessível.")
-            _speak_fallback(text); return
-
-        try:
-            host_info = (NEST_IP, NEST_PORT, None, "Google Nest Hub", "Google Nest Hub")
-            cast = pychromecast.get_chromecast_from_host(host_info)
-            cast.wait()
-            cast.media_controller.play_media(url_public, "audio/mp3")
-            cast.media_controller.block_until_active(timeout=5)
-            cast.media_controller.play()
-            logger.info(f"🔈 Falando (Google TTS): {text}")
-            time.sleep(5)
-        except Exception as e:
-            logger.warning(f"[Cast] Falhou tocar MP3 local ({e}). Usando fallback…")
+            logger.warning("[Nest] Hub inacessível (TCP falhou). Usando fallback.")
             _speak_fallback(text)
+            return
+
+        # 📡 Conecta ao Nest
+        host_info = (NEST_IP, NEST_PORT, None, "Google Nest Hub", "Google Nest Hub")
+        cast = pychromecast.get_chromecast_from_host(host_info)
+        cast.wait()
+
+        # 🔄 Atualiza status (substitui refresh/get_status)
+        try:
+            if hasattr(cast, "update_status"):
+                cast.update_status()
+            elif hasattr(cast, "refresh"):
+                cast.refresh()
+        except Exception:
+            pass
+
+        display_name = (getattr(cast.status, "display_name", "") or "").lower()
+
+        # 🎧 Detecta se o Nest está em modo Bluetooth
+        if "bluetooth" in display_name:
+            logger.warning("[Nest] Bluetooth ativo — tocando TTS localmente via saída padrão de áudio.")
+            _speak_local(text)
+            return
+
+        # 🎚️ Ajusta volume antes de falar
+        try:
+            prev_volume = cast.status.volume_level if cast.status and cast.status.volume_level is not None else 0.5
+            cast.set_volume(1.0)
+            logger.info(f"[Nest] Volume ajustado para 100% (anterior: {prev_volume*100:.0f}%)")
+            time.sleep(0.8)
+        except Exception as vol_err:
+            prev_volume = 0.5
+            logger.warning(f"[Nest] Falha ao ajustar volume: {vol_err}")
+
+        # 🔈 Fala via rede (modo Cast)
+        cast.media_controller.play_media(url_public, "audio/mp3")
+        cast.media_controller.block_until_active(timeout=5)
+        cast.media_controller.play()
+        logger.info(f"🔈 Falando (Google TTS): {text}")
+
+        # ⏱️ Aguarda término da fala
+        time.sleep(0.5)
+        while True:
+            state = getattr(getattr(cast, "media_controller", None), "status", None)
+            player_state = getattr(state, "player_state", "UNKNOWN")
+            if player_state in ("IDLE", "UNKNOWN", None):
+                break
+            time.sleep(0.5)
+
+        # 🔁 Restaura volume anterior
+        try:
+            try:
+                if hasattr(cast, "update_status"):
+                    cast.update_status()
+                elif hasattr(cast, "refresh"):
+                    cast.refresh()
+            except Exception:
+                pass
+            if abs(prev_volume - 1.0) > 0.01:
+                time.sleep(0.5)
+                cast.set_volume(prev_volume)
+                logger.info(f"[Nest] Volume restaurado para {prev_volume*100:.0f}%")
+        except Exception as restore_err:
+            logger.warning(f"[Nest] Falha ao restaurar volume: {restore_err}")
+            try:
+                cast.set_volume(0.5)
+                logger.info("[Nest] Volume definido para 50% (default).")
+            except Exception:
+                pass
+
 
     except Exception as e:
         logger.error(f"Erro no Google TTS: {e}")
         _speak_fallback(text)
 
-def _speak_fallback(text: str) -> None:
-    try:
-        import pychromecast
-        from urllib.parse import quote_plus
 
-        if not _tcp_open(NEST_IP, NEST_PORT):
-            logger.warning("Nest Hub inacessível (fallback).")
-            return
+def _speak_local(text: str) -> None:
+    """Reproduz o TTS localmente (útil quando o Nest está como caixa Bluetooth)."""
+    try:
+
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(GOOGLE_TTS_KEY)
+
+        client = texttospeech.TextToSpeechClient()
+        synthesis_input = texttospeech.SynthesisInput(text=text)
+        voice = texttospeech.VoiceSelectionParams(language_code="pt-BR", name="pt-BR-Standard-B")
+        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+        response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+
+        logger.info("🔊 Tocando áudio local (modo Bluetooth ativo)")
+        pygame.mixer.init()
+        pygame.mixer.music.load(BytesIO(response.audio_content))
+        pygame.mixer.music.play()
+
+        while pygame.mixer.music.get_busy():
+            time.sleep(0.1)
+        pygame.mixer.quit()
+
+    except Exception as e:
+        logger.error(f"Erro no modo local (Bluetooth): {e}")
+        # Fallback secundário com playsound
+        try:
+            temp_file = TTS_DIR / "temp_bt.mp3"
+            temp_file.write_bytes(response.audio_content)
+            playsound.playsound(str(temp_file))
+            temp_file.unlink(missing_ok=True)
+        except Exception as suberr:
+            logger.error(f"Erro no fallback local: {suberr}")
+
 
         host_info = (NEST_IP, NEST_PORT, None, "Google Nest Hub", "Google Nest Hub")
         cast = pychromecast.get_chromecast_from_host(host_info)
         cast.wait()
+        try:
+            if hasattr(cast, "update_status"):
+                cast.update_status()
+            elif hasattr(cast, "refresh"):
+                cast.refresh()
+        except Exception:
+            pass
 
+        display_name = (getattr(cast.status, "display_name", "") or "").lower()
+        if "bluetooth" in display_name:
+            logger.warning("[Nest] Bluetooth ativo (fallback) — tocando localmente.")
+            _speak_local(text)
+            return
+
+        # Volume temporário
+        try:
+            prev_volume = cast.status.volume_level if cast.status and cast.status.volume_level is not None else 0.5
+            cast.set_volume(1.0)
+            logger.info(f"[Nest] Volume ajustado para 100% (fallback, anterior: {prev_volume*100:.0f}%)")
+            time.sleep(0.8)
+        except Exception as vol_err:
+            prev_volume = 0.5
+            logger.warning(f"[Nest] Falha ao ajustar volume (fallback): {vol_err}")
+
+        # Fala via Translate TTS
         tts_url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={quote_plus(text)}&tl=pt-BR&client=tw-ob"
         cast.media_controller.play_media(tts_url, "audio/mp3")
-        cast.media_controller.block_until_active()
+        cast.media_controller.block_until_active(timeout=5)
         cast.media_controller.play()
         logger.info(f"🔈 Falando (fallback): {text}")
-        time.sleep(4)
+
+        # Espera terminar
+        time.sleep(0.5)
+        while True:
+            state = getattr(getattr(cast, "media_controller", None), "status", None)
+            player_state = getattr(state, "player_state", "UNKNOWN")
+            if player_state in ("IDLE", "UNKNOWN", None):
+                break
+            time.sleep(0.5)
+
+        # Restaura volume
+        try:
+            try:
+                if hasattr(cast, "update_status"):
+                    cast.update_status()
+                elif hasattr(cast, "refresh"):
+                    cast.refresh()
+            except Exception:
+                pass
+            if abs(prev_volume - 1.0) > 0.01:
+                time.sleep(0.5)
+                cast.set_volume(prev_volume)
+                logger.info(f"[Nest] Volume restaurado para {prev_volume*100:.0f}% (fallback)")
+        except Exception as restore_err:
+            logger.warning(f"[Nest] Falha ao restaurar volume (fallback): {restore_err}")
+            try:
+                cast.set_volume(0.5)
+                logger.info("[Nest] Volume fallback definido para 50%.")
+            except Exception:
+                pass
+
 
     except Exception as e:
         logger.error(f"Erro no fallback speak(): {e}")
@@ -310,6 +472,7 @@ def _speak_fallback(text: str) -> None:
 # =============================================================================
 # Helpers de frase
 # =============================================================================
+
 def _humanize_timedelta(seconds: float) -> str:
     """Converte delta em segundos numa frase (pt-BR), arredondando para cima."""
     secs = max(0, int(math.ceil(seconds)))
@@ -329,6 +492,7 @@ def _humanize_timedelta(seconds: float) -> str:
         return f"1 hora e {resto} {'minuto' if resto == 1 else 'minutos'}"
     return f"{horas} horas e {resto} {'minuto' if resto == 1 else 'minutos'}"
 
+
 def _build_alert_message(summary: str, start_dt: datetime) -> str:
     agora_dt = tz_now()
     lead_str = _humanize_timedelta((start_dt - agora_dt).total_seconds())
@@ -342,6 +506,7 @@ def _build_alert_message(summary: str, start_dt: datetime) -> str:
 # =============================================================================
 # Execução principal (uma passada)
 # =============================================================================
+
 def run_once():
     start_flask_server()
     log_start_end("MeetingAlerts Run", start=True)
@@ -413,7 +578,7 @@ def run_once():
         if not events:
             logger.info("Nenhum evento encontrado no intervalo configurado.")
         elif not evento_alertado:
-            logger.info("Há eventos futuros, mas nenhum dentro da janela de aviso (≤ %d min).", LEAD_MINUTES)
+            logger.info(f"Há eventos futuros, mas nenhum dentro da janela de aviso (≤ {LEAD_MINUTES} min).")
 
     except Exception as e:
         logger.error(f"Erro geral: {e}")
@@ -424,5 +589,6 @@ def run_once():
 # =============================================================================
 # Entrypoint
 # =============================================================================
+
 if __name__ == "__main__":
     run_once()
